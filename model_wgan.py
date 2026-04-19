@@ -74,19 +74,19 @@ class Generator(nn.Module):
                 ngf * 8, ngf * 4, kernel_size=4, stride=2, padding=1, bias=False
             ),
             nn.BatchNorm2d(ngf * 4),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             # 8×8 → 16×16
             nn.ConvTranspose2d(
                 ngf * 4, ngf * 2, kernel_size=4, stride=2, padding=1, bias=False
             ),
             nn.BatchNorm2d(ngf * 2),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             # 16×16 → 32×32
             nn.ConvTranspose2d(
                 ngf * 2, ngf, kernel_size=4, stride=2, padding=1, bias=False
             ),
             nn.BatchNorm2d(ngf),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             # 32×32 → 64×64
             nn.ConvTranspose2d(ngf, 3, kernel_size=4, stride=2, padding=1, bias=False),
             nn.Tanh(),
@@ -127,26 +127,26 @@ class Critic(nn.Module):
             spectral_norm(
                 nn.Conv2d(3, ndf, kernel_size=4, stride=2, padding=1, bias=False)
             ),
-            nn.LeakyReLU(0.2, inplace=True),
+            nn.LeakyReLU(0.2, inplace=False),
             # 32×32 → 16×16
             spectral_norm(
                 nn.Conv2d(ndf, ndf * 2, kernel_size=4, stride=2, padding=1, bias=False)
             ),
-            nn.LeakyReLU(0.2, inplace=True),
+            nn.LeakyReLU(0.2, inplace=False),
             # 16×16 → 8×8
             spectral_norm(
                 nn.Conv2d(
                     ndf * 2, ndf * 4, kernel_size=4, stride=2, padding=1, bias=False
                 )
             ),
-            nn.LeakyReLU(0.2, inplace=True),
+            nn.LeakyReLU(0.2, inplace=False),
             # 8×8 → 4×4
             spectral_norm(
                 nn.Conv2d(
                     ndf * 4, ndf * 8, kernel_size=4, stride=2, padding=1, bias=False
                 )
             ),
-            nn.LeakyReLU(0.2, inplace=True),
+            nn.LeakyReLU(0.2, inplace=False),
             # 4×4 → scalar
             nn.Flatten(),
             spectral_norm(nn.Linear(ndf * 8 * 4 * 4, 1)),
