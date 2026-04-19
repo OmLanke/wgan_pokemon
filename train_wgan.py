@@ -306,7 +306,7 @@ def train():
         dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=4,
+        num_workers=2,
         pin_memory=(device.type == "cuda"),
         persistent_workers=True,
         drop_last=True,  # keep batch sizes consistent for gradient penalty
@@ -335,7 +335,7 @@ def train():
     if args.resume:
         if not os.path.isfile(args.resume):
             raise FileNotFoundError(f"Checkpoint not found: {args.resume}")
-        ckpt = torch.load(args.resume, map_location=device)
+        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
         G.load_state_dict(ckpt["generator"])
         C.load_state_dict(ckpt["critic"])
         opt_G.load_state_dict(ckpt["opt_G"])
@@ -344,17 +344,19 @@ def train():
         print(f"[Resume] Loaded checkpoint — resuming from epoch {start_epoch}")
 
     # ── torch.compile ─────────────────────────────────────────────────────
-    # Keep a reference to the *uncompiled* Critic for use inside
-    # gradient_penalty. gradient_penalty calls critic with create_graph=True
-    # (higher-order autograd), which is incompatible with torch.compile's AOT
-    # Autograd backend. The compiled C is used for the normal c_real/c_fake
-    # forward passes, giving the speedup without the crash.
-    C_for_gp = C  # uncompiled reference — set before torch.compile call
+    # Only compile the Generator. The Critic is called inside gradient_penalty
+    # with create_graph=True (higher-order autograd). torch.compile uses AOT
+    # Autograd internally, which conflicts with create_graph=True and causes
+    # an inplace-op error on backward — regardless of whether C_for_gp tricks
+    # are used, because torch.compile wraps the module in-place so both
+    # references point to the same compiled graph.
+    C_for_gp = C  # same object as C — kept for clarity in the training loop
     if args.compile:
         try:
             G = torch.compile(G)
-            C = torch.compile(C)
-            print("[Compile] torch.compile enabled (GP uses uncompiled Critic)")
+            print(
+                "[Compile] torch.compile enabled (Generator only — Critic must stay eager for WGAN-GP)"
+            )
         except Exception as exc:
             print(f"[Compile] torch.compile unavailable: {exc}")
 
