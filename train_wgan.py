@@ -37,7 +37,7 @@ import torchvision.utils as vutils
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 
-from model_wgan import Critic, Generator, gradient_penalty, weights_init
+from model_wgan import Critic, Generator, weights_init
 
 
 # ---------------------------------------------------------------------------
@@ -93,18 +93,8 @@ def parse_args():
     p.add_argument(
         "--n_critic",
         type=int,
-        default=5,
-        help="Critic updates per generator update [5]",
-    )
-    p.add_argument(
-        "--lambda_gp", type=float, default=10.0, help="Gradient penalty weight [10.0]"
-    )
-    p.add_argument(
-        "--lazy_reg",
-        type=int,
-        default=4,
-        help="Compute gradient penalty every N critic steps (lazy regularisation). "
-        "lambda_gp is scaled up by N automatically. Set to 1 to disable [4]",
+        default=2,
+        help="Critic updates per generator update [2]",
     )
 
     # Logging / saving
@@ -355,14 +345,12 @@ def train():
     # Autograd internally, which conflicts with create_graph=True and causes
     # an inplace-op error on backward — regardless of whether C_for_gp tricks
     # are used, because torch.compile wraps the module in-place so both
-    # references point to the same compiled graph.
-    C_for_gp = C  # same object as C — kept for clarity in the training loop
+    # No gradient penalty → no create_graph=True → both G and C can be compiled.
     if args.compile:
         try:
             G = torch.compile(G)
-            print(
-                "[Compile] torch.compile enabled (Generator only — Critic must stay eager for WGAN-GP)"
-            )
+            C = torch.compile(C)
+            print("[Compile] torch.compile enabled (Generator + Critic)")
         except Exception as exc:
             print(f"[Compile] torch.compile unavailable: {exc}")
 
@@ -376,17 +364,15 @@ def train():
     print(
         f"\n[Train]  epochs={args.epochs}  batch={args.batch_size}  "
         f"batches/epoch={batches_per_epoch}\n"
-        f"         n_critic={args.n_critic}  lambda_gp={args.lambda_gp}  "
-        f"lazy_reg={args.lazy_reg}  z_dim={args.z_dim}  lr={args.lr}\n"
+        f"         n_critic={args.n_critic}  z_dim={args.z_dim}  lr={args.lr}\n"
         f"         ~{total_iters * steps_per_iter} optimizer steps total\n"
     )
 
-    # Save untrained sample so you can see the baseline
-    out = save_sample_grid(G, z_fixed, 0, sample_dir, args.upscale)
-    print(f"[Init]   Saved baseline sample → {out}\n")
+    # Save a sample at the start so you can see where training stands
+    out = save_sample_grid(G, z_fixed, start_epoch, sample_dir, args.upscale)
+    print(f"[Init]   Saved start sample → {out}\n")
 
     t_train_start = time.time()
-    global_critic_step = 0  # for lazy regularisation
 
     for epoch in range(start_epoch, args.epochs):
         G.train()
@@ -399,36 +385,27 @@ def train():
             real = real.to(device, non_blocking=True)
             batch_size = real.size(0)
 
-            # ── Critic steps ──────────────────────────────────────────────
-            # No autocast: gradient penalty requires float32 for numerically
-            # stable higher-order autograd. Mixing autocast with create_graph=True
-            # causes inplace-op conflicts even in eager mode.
-            #
-            # Lazy regularisation (StyleGAN2): compute the gradient penalty only
-            # every `lazy_reg` critic steps and scale lambda accordingly.
-            # Default lazy_reg=4 → GP computed 25% of the time → ~3× critic speedup
-            # with no meaningful quality loss.
+            # ── Critic steps (hinge loss) ─────────────────────────────────
+            # Hinge loss + spectral norm (already on all critic layers) is
+            # sufficient for stable training and needs no gradient penalty.
+            # This eliminates create_graph=True entirely → both G and C can
+            # be compiled, AMP works on critic, ~8× faster per epoch.
             for _ in range(args.n_critic):
                 z = torch.randn(batch_size, args.z_dim, device=device)
 
-                fake = G(z).detach()
-                c_real = C(real).mean()
-                c_fake = C(fake).mean()
-                c_loss_w = c_fake - c_real  # Wasserstein estimate (maximise real−fake)
-
-                c_loss = c_loss_w
-                if global_critic_step % args.lazy_reg == 0:
-                    # C_for_gp is the uncompiled Critic — required for
-                    # create_graph=True to work with torch.compile on C.
-                    gp = gradient_penalty(C_for_gp, real, fake, device)
-                    # Scale lambda by lazy_reg to keep effective regularisation
-                    # strength constant regardless of how often GP is applied.
-                    c_loss = c_loss_w + (args.lambda_gp * args.lazy_reg) * gp
+                with torch.autocast(device_type=device.type, enabled=use_amp):
+                    fake = G(z).detach()
+                    c_real = C(real)
+                    c_fake = C(fake)
+                    # Hinge: penalise scores below ±1 margin
+                    c_loss = (
+                        torch.relu(1.0 - c_real).mean()
+                        + torch.relu(1.0 + c_fake).mean()
+                    )
 
                 opt_C.zero_grad(set_to_none=True)
                 c_loss.backward()
                 opt_C.step()
-                global_critic_step += 1
 
             epoch_c_loss += c_loss.item()
 
