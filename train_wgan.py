@@ -137,7 +137,14 @@ def parse_args():
     p.add_argument(
         "--compile",
         action="store_true",
-        help="Enable torch.compile (PyTorch 2.0+ — extra ~15%% speed)",
+        default=True,
+        help="Enable torch.compile — on by default, pass --no_compile to disable",
+    )
+    p.add_argument(
+        "--no_compile",
+        dest="compile",
+        action="store_false",
+        help="Disable torch.compile",
     )
     p.add_argument("--seed", type=int, default=42, help="Random seed [42]")
 
@@ -178,6 +185,17 @@ class PokemonDataset(Dataset):
                 T.Resize(
                     (image_size, image_size), interpolation=T.InterpolationMode.LANCZOS
                 ),
+                # Augmentation — applied every epoch so each pass sees different
+                # versions of the 819 sprites. Keeps training time identical
+                # (CPU-side, overlapped with GPU compute) but greatly improves
+                # generalisation and output variety.
+                T.RandomHorizontalFlip(p=0.5),
+                T.RandomAffine(
+                    degrees=10,
+                    translate=(0.05, 0.05),
+                    interpolation=T.InterpolationMode.BILINEAR,
+                ),
+                T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05),
                 T.ToTensor(),  # → [0, 1]
                 T.Normalize(
                     [0.5, 0.5, 0.5],  # → [-1, 1]
@@ -288,7 +306,7 @@ def train():
         dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=2,
+        num_workers=4,
         pin_memory=(device.type == "cuda"),
         persistent_workers=True,
         drop_last=True,  # keep batch sizes consistent for gradient penalty
