@@ -91,7 +91,7 @@ curl -Lsf https://astral.sh/uv/install.sh | sh
 uv sync
 
 # For GPU support, install the CUDA-enabled PyTorch build instead:
-uv add torch torchvision --index-url https://download.pytorch.org/whl/cu121
+uv add torch torchvision --default-index https://download.pytorch.org/whl/cu121
 ```
 
 ### Google Colab

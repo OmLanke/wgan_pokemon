@@ -360,18 +360,20 @@ def train():
             batch_size = real.size(0)
 
             # ── Critic steps ──────────────────────────────────────────────
+            # NOTE: No autocast here. Gradient penalty requires float32 for
+            # correct gradients, and mixing autocast with create_graph=True
+            # causes inplace-op conflicts on backward when torch.compile is
+            # active. Run the entire critic step in float32.
             for _ in range(args.n_critic):
                 z = torch.randn(batch_size, args.z_dim, device=device)
 
-                with torch.autocast(device_type=device.type, enabled=use_amp):
-                    fake = G(z).detach()
-                    c_real = C(real).mean()
-                    c_fake = C(fake).mean()
-                    # Wasserstein distance estimate (maximise real - fake)
-                    c_loss_w = c_fake - c_real
+                fake = G(z).detach()
+                c_real = C(real).mean()
+                c_fake = C(fake).mean()
+                # Wasserstein distance estimate (maximise real - fake)
+                c_loss_w = c_fake - c_real
 
-                # Gradient penalty always in float32 (numerically critical)
-                gp = gradient_penalty(C, real.float(), fake.float(), device)
+                gp = gradient_penalty(C, real, fake, device)
 
                 c_loss = c_loss_w + args.lambda_gp * gp
 
