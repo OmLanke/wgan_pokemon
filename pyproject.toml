@@ -1,0 +1,13 @@
+[project]
+name = "pokemonold"
+version = "0.1.0"
+description = "Pokemon DCGAN image generator"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "torch>=2.0",
+    "torchvision>=0.15",
+    "Pillow>=10.0",
+    "numpy>=2.1",
+    "imageio>=2.31",
+]
