@@ -153,7 +153,12 @@ def main():
 
     # ── Build generator ───────────────────────────────────────────────────
     G = Generator(z_dim=z_dim, ngf=ngf).to(device)
-    G.load_state_dict(ckpt["generator"])
+    # torch.compile prefixes all keys with "_orig_mod." — strip it so the
+    # state dict loads correctly whether the checkpoint was saved from a
+    # compiled or uncompiled model.
+    state_dict = ckpt["generator"]
+    state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
+    G.load_state_dict(state_dict)
     G.eval()
 
     param_count = sum(p.numel() for p in G.parameters()) / 1e6

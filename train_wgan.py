@@ -336,8 +336,14 @@ def train():
         if not os.path.isfile(args.resume):
             raise FileNotFoundError(f"Checkpoint not found: {args.resume}")
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
-        G.load_state_dict(ckpt["generator"])
-        C.load_state_dict(ckpt["critic"])
+
+        # Strip torch.compile's "_orig_mod." prefix if checkpoint was saved
+        # from a compiled model.
+        def strip_orig_mod(sd):
+            return {k.replace("_orig_mod.", ""): v for k, v in sd.items()}
+
+        G.load_state_dict(strip_orig_mod(ckpt["generator"]))
+        C.load_state_dict(strip_orig_mod(ckpt["critic"]))
         opt_G.load_state_dict(ckpt["opt_G"])
         opt_C.load_state_dict(ckpt["opt_C"])
         start_epoch = ckpt["epoch"] + 1
