@@ -345,12 +345,14 @@ def train():
     # Autograd internally, which conflicts with create_graph=True and causes
     # an inplace-op error on backward — regardless of whether C_for_gp tricks
     # are used, because torch.compile wraps the module in-place so both
-    # No gradient penalty → no create_graph=True → both G and C can be compiled.
+    # spectral_norm uses weight hooks with inplace ops — incompatible with
+    # torch.compile's AOT Autograd. Only compile the Generator.
     if args.compile:
         try:
             G = torch.compile(G)
-            C = torch.compile(C)
-            print("[Compile] torch.compile enabled (Generator + Critic)")
+            print(
+                "[Compile] torch.compile enabled (Generator only — Critic has spectral_norm)"
+            )
         except Exception as exc:
             print(f"[Compile] torch.compile unavailable: {exc}")
 

@@ -1,104 +1,125 @@
-# AI Agent Guidelines for Pokemon DCGAN
+# AI Agent Guidelines for Pokemon WGAN
 
-This project implements a Deep Convolutional Generative Adversarial Network (DCGAN) to generate new Pokemon images from a dataset of 64x64 pixel Pokemon sprites.
+This project implements an SN-GAN (hinge loss + spectral norm) to generate Pokemon sprites at 64×64. It was rewritten from a TensorFlow 1.x DCGAN to PyTorch.
 
 ## Project Architecture
 
 ### Core Components
 
-| File                   | Purpose                                                                |
-| ---------------------- | ---------------------------------------------------------------------- |
-| **main.py**            | Entry point for training/inference with CLI flags for hyperparameters  |
-| **model.py**           | DCGAN class defining generator and discriminator network architectures |
-| **ops.py**             | Custom TensorFlow operations (conv2d, deconv2d, lrelu, batch_norm)     |
-| **utils.py**           | Image processing utilities (imread, transform, save_images, merge)     |
-| **augmentation.ipynb** | Data augmentation pipeline (flipping, rotation)                        |
+| File                | Purpose                                                                 |
+| ------------------- | ----------------------------------------------------------------------- |
+| **train_wgan.py**   | Training loop — hinge loss, AMP, torch.compile, resume, sample saving  |
+| **model_wgan.py**   | Generator + Critic architectures, weights_init, gradient_penalty (unused) |
+| **generate_wgan.py**| Inference script — truncation, LANCZOS upscale, batch generation        |
+| **pyproject.toml**  | uv deps: torch, torchvision, Pillow, numpy (Python 3.12)                |
 
-### Directory Structure
+### Directory Structure (Colab)
 
-- `checkpoint/pokemon_64_64_64/` - Pre-trained model checkpoints (TensorFlow 1.x format)
-- `data/pokemon/` - Training dataset location
-- `samples/` - Generated output images during training
+- `/content/drive/MyDrive/pokemon_dataset/` — 819 PNG/JPG training images
+- `/content/drive/MyDrive/pokemon_checkpoints/` — `.pt` checkpoints + `samples/` grids
 
-## Quick Start
+## Quick Start (Colab)
 
-### Training
+### Training from scratch
 
 ```bash
-python main.py --dataset pokemon --train --epoch 2000
+uv run train_wgan.py \
+    --data_dir /content/drive/MyDrive/pokemon_dataset \
+    --checkpoint_dir /content/drive/MyDrive/pokemon_checkpoints \
+    --epochs 500
 ```
 
-### Inference from Pre-trained Model
+### Resume
 
 ```bash
-python main.py --dataset pokemon --generate_test_images 100
+uv run train_wgan.py \
+    --data_dir /content/drive/MyDrive/pokemon_dataset \
+    --checkpoint_dir /content/drive/MyDrive/pokemon_checkpoints \
+    --resume /content/drive/MyDrive/pokemon_checkpoints/checkpoint_epoch0150.pt \
+    --epochs 500
 ```
 
-### Key CLI Flags
+### Generate images
 
-- `--dataset pokemon` - Required for pokemon dataset
-- `--train` - Enable training mode
-- `--epoch 2000` - Number of training epochs
-- `--batch_size 64` - Batch size (default 64)
-- `--learning_rate 0.0002` - Adam optimizer learning rate
-- `--output_height 64` / `--output_width 64` - Image dimensions
-- `--checkpoint_dir` - Path to save/load checkpoints
-- `--sample_dir` - Path to save generated samples
+```bash
+uv run generate_wgan.py \
+    --checkpoint /content/drive/MyDrive/pokemon_checkpoints/checkpoint_final.pt \
+    --n 100
+```
 
-## Technical Details
+## Architecture
 
-### DCGAN Architecture
+**Generator** (3.81M params):
+- Input: z_dim=128 noise vector
+- Linear → reshape 4×4×512 → 4× ConvTranspose2d blocks → 3×64×64 (Tanh)
+- BatchNorm2d after each block, ReLU activations (`inplace=False` — required for torch.compile)
 
-**Generator:**
+**Critic** (2.76M params):
+- Input: 3×64×64 image
+- 4× Conv2d blocks → Flatten → Linear → scalar (no sigmoid)
+- All layers wrapped with `spectral_norm` — enforces Lipschitz constraint
+- LeakyReLU(0.2, `inplace=False`) — required for torch.compile
 
-- Input: 100-dim noise vector (uniform distribution)
-- 5 deconvolution layers with ReLU activations
-- Output: 3×64×64 RGB image (Tanh activation)
+## Training Details
 
-**Discriminator:**
+- **Loss**: Hinge loss (not Wasserstein) — no gradient penalty needed
+  - Critic: `relu(1 - C(real)).mean() + relu(1 + C(fake)).mean()`
+  - Generator: `-C(G(z)).mean()`
+- **Optimiser**: Adam, betas=(0.0, 0.9), lr=1e-4
+- **AMP**: float16 on both G and C steps
+- **n_critic**: 2 (hinge is stable with fewer critic steps)
+- **Augmentation**: RandomHorizontalFlip, RandomAffine(±10°, translate 5%), ColorJitter
 
-- Input: 3×64×64 RGB image
-- 5 convolution layers with Leaky ReLU activations
-- Output: Binary classification (Sigmoid)
+## Known torch.compile Constraints — READ THIS
 
-### Data Format
+These were discovered through painful trial and error. Do not revert them.
 
-- Input images: 64×64 pixels, RGB (3-channel)
-- PNG with transparency: Converted to JPG with white background
-- Data augmentation: Horizontal flip, ±3°/±5°/±7° rotation
+1. **Only compile the Generator.** The Critic uses `spectral_norm`, which has weight hooks with inplace ops that break torch.compile's AOT Autograd backend. Compiling the Critic always causes:
+   ```
+   RuntimeError: one of the variables needed for gradient computation has been
+   modified by an inplace operation: [torch.cuda.FloatTensor [1]] is at version
+   3; expected version 2
+   ```
 
-### Training Hyperparameters
+2. **Never use `inplace=True`** on any activation (ReLU, LeakyReLU) in either model. Inplace ops conflict with torch.compile's graph tracing.
 
-- Batch size: 64
-- Learning rate: 0.0002 (Adam optimizer)
-- Momentum (beta1): 0.5
-- Weight initialization: Normal distribution (std=0.02)
-- Leaky ReLU slope: 0.2
+3. **Never use gradient penalty (`create_graph=True`) with torch.compile.** Even with an "uncompiled reference" trick, torch.compile wraps the module in-place so both references point to the compiled graph. GP + compile = always crashes.
 
-## Important Notes for Agents
+4. **Never wrap `torch.autocast` around the critic step when using GP.** Mixing AMP with `create_graph=True` causes the same inplace error in eager mode too.
 
-### Legacy Code
+## Why Hinge Loss (not WGAN-GP)
 
-This is TensorFlow 1.x code (circa 2017). When modifying:
+WGAN-GP requires `create_graph=True` in the gradient penalty, which:
+- Cannot be used with `torch.compile` (crashes)
+- Is very slow even in eager mode (~20s/epoch on T4 vs ~3s with hinge)
+- Is redundant — the Critic already has `spectral_norm` on every layer which enforces the Lipschitz constraint on its own
 
-- Use TensorFlow 1.x APIs - compatibility shims exist in `ops.py` for older versions
-- Checkpoints use TensorFlow 1.x SaverFormat - not compatible with TensorFlow 2.x
-- `tf.app.flags` is TensorFlow 1.x style (deprecated in 2.x)
+Hinge loss + spectral norm = SN-GAN, which is stable and fast.
 
-### Data Dependencies
+## Checkpoint Format
 
-- Training requires `data/pokemon/` directory with Pokemon images
-- Pre-trained checkpoints exist but assume specific architecture
-- Image preprocessing done via `utils.get_image()` - respects crop/resize settings
+Checkpoints are saved as:
+```python
+{
+    "epoch": int,
+    "generator": G.state_dict(),   # may have "_orig_mod." prefix if saved from compiled model
+    "critic": C.state_dict(),
+    "opt_G": opt_G.state_dict(),
+    "opt_C": opt_C.state_dict(),
+    "args": vars(args),
+}
+```
 
-### Common Development Tasks
+When loading, always strip `_orig_mod.` prefix from state dict keys:
+```python
+state_dict = {k.replace("_orig_mod.", ""): v for k, v in ckpt["generator"].items()}
+G.load_state_dict(state_dict)
+```
 
-1. **Modify network architecture**: Edit generator/discriminator in `model.py`
-2. **Adjust training hyperparameters**: Use CLI flags in `main.py` or modify defaults
-3. **Add data augmentation**: Update `augmentation.ipynb` and re-run preprocessing
-4. **Analyze training**: Loss curves logged during training, samples saved to `sample_dir`
+This is already handled in both `train_wgan.py` (resume) and `generate_wgan.py`.
 
-## References
+## uv / Python Version
 
-- See [README.md](README.md) for detailed DCGAN theory and experimental results
-- Original architecture from [@carpedm20](https://github.com/carpedm20/DCGAN-tensorflow)
+- Python 3.12 — required because torchvision CUDA wheels (cu121) have no cp313 builds
+- Install CUDA torch on Colab: `uv add torch torchvision --default-index https://download.pytorch.org/whl/cu121`
+- DataLoader `num_workers=2` — Colab warns if higher
