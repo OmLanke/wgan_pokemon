@@ -3,7 +3,7 @@ name = "pokemonold"
 version = "0.1.0"
 description = "Pokemon DCGAN image generator"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
     "torch>=2.0",
     "torchvision>=0.15",
